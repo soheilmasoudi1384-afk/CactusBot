@@ -130,6 +130,15 @@ class Database:
                     PRIMARY KEY (group_guid, user_guid)
                 );
             """,
+            "rules": """
+                CREATE TABLE rules (
+                    group_guid VARCHAR(255) PRIMARY KEY,
+                    rules_text LONGTEXT DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY (group_guid) REFERENCES `groups`(group_guid) ON DELETE CASCADE
+                )
+            """,
             "scheduled_messages": """
                 CREATE TABLE IF NOT EXISTS scheduled_messages (
                     message_id VARCHAR(255) PRIMARY KEY,
@@ -813,5 +822,36 @@ class Database:
                 await cursor.execute("DELETE FROM scheduled_messages")
                 await conn.commit()
 
+    # قوانین برای هر گروه
+    async def set_group_rules(self, group_guid: str, rules_text: str):
+        """Set or update rules for a group"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    INSERT INTO rules (group_guid, rules_text)
+                    VALUES (%s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        rules_text = VALUES(rules_text),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (group_guid, rules_text))
 
+    async def get_group_rules(self, group_guid: str) -> Optional[str]:
+        """Get rules for a specific group"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT rules_text FROM rules WHERE group_guid = %s",
+                    (group_guid,)
+                )
+                result = await cursor.fetchone()
+                return result[0] if result and result[0] else None
+
+    async def delete_group_rules(self, group_guid: str):
+        """Delete rules for a group"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "DELETE FROM rules WHERE group_guid = %s",
+                    (group_guid,)
+                )
 
