@@ -8,5 +8,4 @@ def register_handlers(bot):
     from .rules_handler import register_rules_handlers
     register_rules_handlers(bot)
     
-    print("Handlers registered")
-
+    print("✅ All core handlers registered")
