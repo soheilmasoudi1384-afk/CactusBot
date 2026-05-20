@@ -12,23 +12,37 @@ DEFAULT_GROUP_SETTINGS = {
         "gif": False, "music": False, "profanity": False, "forbidden_words": False,
         "english_text": False, "reply": False, "forward": True, "edit": False,
         "emoji": False, "hang_code": True, "poll": False, "phone_number": False,
-        "number": False, "hashtag": False, "warning": False
+        "number": False, "hashtag": False, "warning": False, "metadata": False, "id": False
     },
     "features": {
         "spokesperson_panel": True, "group_stats": True, "user_stats": True, "entertainment": True
     },
     "lists": {
-        "profanity": [], # لیست پیش‌فرض کلمات رکیک
+        "profanity": [],
         "forbidden_words": [],
+        "whitelist": [],
+        "admins": [],
+        "owners": [],
+        "special": [],
+        "muted": [],
+        "exempt": [],
+        "blocked": [],
+        "tags": {"admin": True, "special": True, "owner": True, "exempt": True, "muted": True, "kick": True, "blocked": True},
+        "metadata": {"hyperlink": False, "spoiler": False, "bold": False, "italic": False, "mono": False, "strikethrough": False, "underline": False, "quote": False},
+        "fonts": [],
+        "entertainment": {"chistan": False, "joke": False, "quiz": False},
+        "utility": {"link": None},
+        "rules": [],
         "reports": {
-            "text": 0, "photo": 0, "video": 0, "sticker": 0
-            },
-        "exempt_users": []
+            "text": 0, "link": 0, "profanity": 0, "video": 0, "id": 0, "forbidden_words": 0,
+            "voice": 0, "photo": 0, "forward": 0, "hang_code": 0, "sticker": 0, "poll": 0,
+            "metadata": 0, "music": 0, "file": 0, "gif": 0
+        }
     },
-    "max_warnings" : 3,
-    "kicked" : 0,
+    "max_warnings": 3,
+    "kicked": 0,
     "welcome": False,
-    "welcome_message" : "سلام عزیز 🌹\nبه گروه خوش اومدی!\nامیدواریم لحظات خوبی رو کنار ما داشته باشی. لطفاً برای حفظ نظم، قوانین رو رعایت کن. 🙏",
+    "welcome_message": "سلام عزیز 🌹\nبه گروه خوش اومدی!",
     "mute_group": 0
 }
 
@@ -68,6 +82,7 @@ class Database:
                 CREATE TABLE `groups` (
                     group_guid VARCHAR(255) PRIMARY KEY,
                     title VARCHAR(500),
+                    owner_guid VARCHAR(255),
                     member_count INT DEFAULT 0,
                     settings JSON,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +103,9 @@ class Database:
                     warning INT DEFAULT 0,
                     mute INT DEFAULT 0,
                     user_rank VARCHAR(50) DEFAULT 'member',
+                    first_name VARCHAR(255),
+                    last_name VARCHAR(255),
+                    username VARCHAR(255),
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (group_guid, user_guid),
                     FOREIGN KEY (group_guid) REFERENCES `groups`(group_guid) ON DELETE CASCADE,
@@ -105,7 +123,29 @@ class Database:
                     INDEX idx_group_user (group_guid, user_guid)
                 )
             """,
-            
+            "group_stats": """
+                CREATE TABLE group_stats (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    group_guid VARCHAR(255),
+                    stat_type VARCHAR(50),
+                    count INT DEFAULT 0,
+                    recorded_date DATE,
+                    recorded_time TIME,
+                    UNIQUE KEY unique_stat (group_guid, stat_type, recorded_date),
+                    FOREIGN KEY (group_guid) REFERENCES `groups`(group_guid) ON DELETE CASCADE
+                )
+            """,
+            "user_daily_stats": """
+                CREATE TABLE user_daily_stats (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    group_guid VARCHAR(255),
+                    user_guid VARCHAR(255),
+                    message_count INT DEFAULT 0,
+                    recorded_date DATE,
+                    UNIQUE KEY unique_user_stat (group_guid, user_guid, recorded_date),
+                    FOREIGN KEY (group_guid) REFERENCES `groups`(group_guid) ON DELETE CASCADE
+                )
+            """,
             "forced_channels": """
                 CREATE TABLE forced_channels (
                     channel_guid VARCHAR(255) PRIMARY KEY,
@@ -113,7 +153,6 @@ class Database:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """,
-
             "bot_settings": """
                 CREATE TABLE bot_settings (
                     id INT PRIMARY KEY DEFAULT 1,
@@ -128,7 +167,7 @@ class Database:
                     user_information JSON,
                     score           INT DEFAULT 0,
                     PRIMARY KEY (group_guid, user_guid)
-                );
+                )
             """,
             "rules": """
                 CREATE TABLE rules (
@@ -145,9 +184,17 @@ class Database:
                     interval_hours INT NOT NULL,
                     last_sent DATETIME,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
+                )
+            """,
+            "welcome_logs": """
+                CREATE TABLE welcome_logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    group_guid VARCHAR(255),
+                    user_guid VARCHAR(255),
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_welcome (group_guid, user_guid)
+                )
             """
-
         }
 
         async with self.pool.acquire() as conn:
@@ -161,16 +208,23 @@ class Database:
 
     
     # ===== Group Methods =====
-    async def add_or_update_group(self, group_guid: str, title: str):
+    async def add_or_update_group(self, group_guid: str, title: str, owner_guid: str = None):
         """Adds a new group with default settings or updates its title if it exists."""
         settings_json = json.dumps(DEFAULT_GROUP_SETTINGS)
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                await cursor.execute("""
-                    INSERT INTO `groups` (group_guid, title, settings)
-                    VALUES (%s, %s, %s)
-                    ON DUPLICATE KEY UPDATE title = VALUES(title)
-                """, (group_guid, title, settings_json))
+                if owner_guid:
+                    await cursor.execute("""
+                        INSERT INTO `groups` (group_guid, title, owner_guid, settings)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE title = VALUES(title), owner_guid = VALUES(owner_guid)
+                    """, (group_guid, title, owner_guid, settings_json))
+                else:
+                    await cursor.execute("""
+                        INSERT INTO `groups` (group_guid, title, settings)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE title = VALUES(title)
+                    """, (group_guid, title, settings_json))
 
     async def get_group_settings(self, group_guid: str) -> Optional[Dict]:
         """Get group settings"""
@@ -191,24 +245,129 @@ class Database:
                     (json.dumps(settings), group_guid)
                 )
 
+    async def get_group_owner(self, group_guid: str) -> Optional[str]:
+        """Get group owner guid"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT owner_guid FROM `groups` WHERE group_guid = %s", (group_guid,))
+                result = await cursor.fetchone()
+                return result[0] if result else None
+
+    # ===== List Management Methods =====
+    async def add_to_list(self, group_guid: str, list_name: str, item: str):
+        """Add item to a list in group settings"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        list_path = f"lists.{list_name}"
+        if list_name not in settings.get("lists", {}):
+            settings["lists"][list_name] = []
+        
+        if item not in settings["lists"][list_name]:
+            settings["lists"][list_name].append(item)
+            await self.update_group_settings(group_guid, settings)
+            return True
+        return False
+
+    async def remove_from_list(self, group_guid: str, list_name: str, item: str):
+        """Remove item from a list in group settings"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        if list_name in settings.get("lists", {}) and item in settings["lists"][list_name]:
+            settings["lists"][list_name].remove(item)
+            await self.update_group_settings(group_guid, settings)
+            return True
+        return False
+
+    async def get_list(self, group_guid: str, list_name: str) -> List:
+        """Get a specific list from group settings"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return []
+        return settings.get("lists", {}).get(list_name, [])
+
+    async def clear_list(self, group_guid: str, list_name: str):
+        """Clear a specific list in group settings"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        if list_name in settings.get("lists", {}):
+            settings["lists"][list_name] = []
+            await self.update_group_settings(group_guid, settings)
+            return True
+        return False
+
+    async def reset_locks(self, group_guid: str):
+        """Reset all locks to default state"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        default_locks = DEFAULT_GROUP_SETTINGS["locks"]
+        settings["locks"] = default_locks.copy()
+        await self.update_group_settings(group_guid, settings)
+        return True
+
+    async def reset_restrictions(self, group_guid: str):
+        """Reset all restrictions (blocks, mutes, etc)"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        settings["lists"]["blocked"] = []
+        settings["lists"]["muted"] = []
+        
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    UPDATE group_members SET warning = 0, mute = 0
+                    WHERE group_guid = %s
+                """, (group_guid,))
+        
+        await self.update_group_settings(group_guid, settings)
+        return True
+
+    async def add_custom_tag(self, group_guid: str, tag_name: str):
+        """Add a custom tag to group"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        if "tags" not in settings["lists"]:
+            settings["lists"]["tags"] = {}
+        
+        settings["lists"]["tags"][tag_name] = True
+        await self.update_group_settings(group_guid, settings)
+        return True
+
+    async def get_all_tags(self, group_guid: str) -> Dict:
+        """Get all tags for a group"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return {}
+        return settings.get("lists", {}).get("tags", {})
+
     # ===== Group Member Methods =====
-    async def add_user_to_group(self, group_guid: str, user_guid: str, user_rank: str = 'member'):
+    async def add_user_to_group(self, group_guid: str, user_guid: str, user_rank: str = 'member', first_name: str = None, last_name: str = None, username: str = None):
         """Adds a user to a group's member list."""
-        # ابتدا اطمینان حاصل می‌کنیم کاربر در جدول اصلی users وجود دارد
         await self.add_user(user_guid)
 
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
-                    INSERT IGNORE INTO group_members (group_guid, user_guid, user_rank)
-                    VALUES (%s, %s, %s)
-                """, (group_guid, user_guid, user_rank))
+                    INSERT INTO group_members (group_guid, user_guid, user_rank, first_name, last_name, username)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE first_name = VALUES(first_name), last_name = VALUES(last_name), username = VALUES(username)
+                """, (group_guid, user_guid, user_rank, first_name, last_name, username))
 
     async def get_group_member(self, group_guid: str, user_guid: str) -> Optional[Dict]:
         """Retrieves a specific user's data for a specific group."""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
-                # برای تعداد اخطارها، به صورت زنده از جدول warnings شمارش می‌کنیم
                 await cursor.execute("""
                     SELECT 
                         gm.*, 
@@ -219,12 +378,26 @@ class Database:
                         gm.group_guid = %s AND gm.user_guid = %s
                 """, (group_guid, user_guid))
                 return await cursor.fetchone()
+    
+    async def get_user_display_name(self, group_guid: str, user_guid: str) -> str:
+        """Get user's display name (first_name + last_name or username)"""
+        member = await self.get_group_member(group_guid, user_guid)
+        if not member:
+            return user_guid
+        
+        name = ""
+        if member.get("first_name"):
+            name += member["first_name"]
+        if member.get("last_name"):
+            name += " " + member["last_name"]
+        
+        if not name.strip() and member.get("username"):
+            name = member["username"]
+        
+        return name.strip() if name.strip() else user_guid
             
     async def decrement_all_muted_groups(self):
-        """
-        Decrease mute_group count by 1 for ALL groups where mute_group > 0.
-        This is highly optimized and runs a single query.
-        """
+        """Decrease mute_group count by 1 for ALL groups where mute_group > 0."""
         try:
             async with self.pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -238,10 +411,7 @@ class Database:
             print(f"Database Error in decrement_all_muted_groups: {e}")
     
     async def decrement_all_mutes(self):
-        """
-        Decrease mute count by 1 for ALL users who are currently muted.
-        This is highly optimized and runs a single query.
-        """
+        """Decrease mute count by 1 for ALL users who are currently muted."""
         try:
             async with self.pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -254,12 +424,8 @@ class Database:
         except Exception as e:
             print(f"Database Error in decrement_all_mutes: {e}")
 
-    
     async def set_member_mute(self, group_guid: str, user_guid: str, mute_count: int):
-        """
-        Set mute count for a user in a specific group.
-        If mute_count is 0, user is unmuted.
-        """
+        """Set mute count for a user in a specific group."""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -269,15 +435,7 @@ class Database:
                 """, (mute_count, group_guid, user_guid))
 
     async def get_group_total_messages(self, group_guid: str) -> int:
-        """
-        مجموع پیام‌های ارسال شده توسط تمامی اعضای یک گروه را محاسبه می‌کند.
-        
-        Parameters:
-            group_guid (str): شناسه گروه
-            
-        Returns:
-            int: مجموع پیام‌های گروه
-        """
+        """Get total messages for a group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -286,19 +444,10 @@ class Database:
                     WHERE group_guid = %s
                 """, (group_guid,))
                 result = await cursor.fetchone()
-                
                 return int(result[0]) if result and result[0] is not None else 0
             
     async def get_group_total_messages_today(self, group_guid: str) -> int:
-        """
-        مجموع پیام‌های ارسال شده توسط تمامی اعضای 24 ساعت اخیر را محاسبه می‌کند.
-        
-        Parameters:
-            group_guid (str): شناسه گروه
-            
-        Returns:
-            int: مجموع پیام‌های گروه
-        """
+        """Get total messages today for a group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -307,13 +456,10 @@ class Database:
                     WHERE group_guid = %s
                 """, (group_guid,))
                 result = await cursor.fetchone()
-                
                 return int(result[0]) if result and result[0] is not None else 0
     
     async def get_muted_members_count(self, group_guid: str):
-        """
-        Returns the number of group members whose mute_count is greater than 0.
-        """
+        """Returns the number of muted members"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -321,16 +467,11 @@ class Database:
                     FROM group_members
                     WHERE group_guid = %s AND mute > 0
                 """, (group_guid,))
-                
                 (count,) = await cursor.fetchone()
                 return count
 
-    
     async def decrement_member_mute(self, group_guid: str, user_guid: str):
-        """
-        Decrease mute count by 1.
-        Mute value will never go below 0.
-        """
+        """Decrease mute count by 1"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -342,11 +483,8 @@ class Database:
                     WHERE group_guid = %s AND user_guid = %s
                 """, (group_guid, user_guid))
 
-
     async def is_member_muted(self, group_guid: str, user_guid: str) -> bool:
-        """
-        Check if user is currently muted.
-        """
+        """Check if user is currently muted"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -367,9 +505,7 @@ class Database:
                 return await cursor.fetchall()
             
     async def get_member_mute(self, group_guid: str, user_guid: str) -> int:
-        """
-        Get current mute count of a user in a group.
-        """
+        """Get current mute count of a user in a group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -379,41 +515,43 @@ class Database:
                 result = await cursor.fetchone()
                 return result[0] if result else 0
 
-        # ===== User Rank Methods =====
+    # ===== User Rank Methods =====
     async def get_group_admins(self, group_guid: str) -> List[Dict]:
-        """
-        دریافت لیست تمامی ادمین‌های یک گروه (کسانی که user_rank آنها admin است).
-        
-        Parameters:
-            group_guid (str): شناسه گروه
-            
-        Returns:
-            List[Dict]: لیستی از دیکشنری‌ها شامل اطلاعات ادمین‌ها
-        """
+        """Get all admins of a group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("""
-                    SELECT user_guid, user_rank 
+                    SELECT user_guid, user_rank, first_name, last_name, username
                     FROM group_members 
                     WHERE group_guid = %s AND user_rank = 'admin'
                 """, (group_guid,))
-                
+                return list(await cursor.fetchall()) if await cursor.fetchall() else []
+
+    async def get_group_admins_and_owner(self, group_guid: str) -> List[Dict]:
+        """Get all admins and owner of a group"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute("""
+                    SELECT user_guid, user_rank, first_name, last_name, username
+                    FROM group_members 
+                    WHERE group_guid = %s AND user_rank IN ('admin', 'owner')
+                """, (group_guid,))
                 result = await cursor.fetchall()
                 return list(result) if result else []
-            
+
+    async def get_group_owner_member(self, group_guid: str) -> Optional[Dict]:
+        """Get owner member data"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute("""
+                    SELECT user_guid, user_rank, first_name, last_name, username
+                    FROM group_members 
+                    WHERE group_guid = %s AND user_rank = 'owner'
+                """, (group_guid,))
+                return await cursor.fetchone()
 
     async def set_user_rank(self, group_guid: str, user_guid: str, rank: str) -> bool:
-        """
-        Set or update the rank of a user in a specific group.
-        
-        Parameters:
-            group_guid (str): Group identifier
-            user_guid (str): User identifier
-            rank (str): New rank value (e.g., 'member', 'admin', 'moderator', 'owner')
-            
-        Returns:
-            bool: True if update was successful, False if user not found in group
-        """
+        """Set or update the rank of a user in a specific group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -421,13 +559,10 @@ class Database:
                     SET user_rank = %s 
                     WHERE group_guid = %s AND user_guid = %s
                 """, (rank, group_guid, user_guid))
-                
-                # بررسی تعداد ردیف‌های تأثیرپذیر
                 return cursor.rowcount > 0
 
-
     async def increment_user_message_count(self, group_guid: str, user_guid: str):
-        """Increments total and daily message counts for a user in a group."""
+        """Increments total and daily message counts for a user in a group"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -437,7 +572,7 @@ class Database:
                 """, (group_guid, user_guid))
     
     async def increment_member_warning(self, group_guid: str, user_guid: str):
-        """Increase user's warning count inside group_members table by +1."""
+        """Increase user's warning count inside group_members table by +1"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -447,7 +582,7 @@ class Database:
                 """, (group_guid, user_guid))
     
     async def set_member_warning(self, group_guid: str, user_guid: str, count: int):
-        """Set the user's warning count to an exact number (including reset to 0)."""
+        """Set the user's warning count to an exact number"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -456,25 +591,17 @@ class Database:
                     WHERE group_guid = %s AND user_guid = %s
                 """, (count, group_guid, user_guid))
 
-
-                
     async def reset_daily_messages(self):
-        """Resets the daily message count for ALL users in ALL `groups`.
-        This should be run once a day by a scheduler."""
+        """Resets the daily message count for ALL users"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("UPDATE group_members SET messages_today = 0")
 
-    # متدهای مربوط به اخطار، سکوت و بلاک مانند قبل باقی می‌مانند
-    # ... (add_warning, get_warnings, etc)
-
-    
-    # User methods (تغییرات اصلی در این بخش اعمال شده است)
+    # User methods
     async def add_user(self, user_guid: str):
         """Add user (if not exists)"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # استفاده از IGNORE برای جلوگیری از خطا در صورت وجود کاربر
                 await cursor.execute("""
                     INSERT IGNORE INTO users (user_guid)
                     VALUES (%s)
@@ -486,7 +613,6 @@ class Database:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("SELECT * FROM users")
                 result = await cursor.fetchall()
-                # تبدیل نتیجه به لیست (در صورت خالی بودن، لیست خالی برمی‌گرداند)
                 return list(result) if result else []
     
     async def get_user(self, user_guid: str) -> Optional[Dict]:
@@ -495,14 +621,68 @@ class Database:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("SELECT * FROM users WHERE user_guid = %s", (user_guid,))
                 return await cursor.fetchone()
-    
-        # ===== Forced Join Methods =====
 
+    # ===== Statistics Methods =====
+    async def increment_report_stat(self, group_guid: str, stat_type: str):
+        """Increment report statistics for a group"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return False
+        
+        if stat_type in settings.get("lists", {}).get("reports", {}):
+            settings["lists"]["reports"][stat_type] += 1
+            await self.update_group_settings(group_guid, settings)
+            return True
+        return False
+
+    async def get_group_reports(self, group_guid: str) -> Dict:
+        """Get all reports for a group"""
+        settings = await self.get_group_settings(group_guid)
+        if not settings:
+            return {}
+        return settings.get("lists", {}).get("reports", {})
+
+    async def get_group_member_stats(self, group_guid: str, user_guid: str) -> Optional[Dict]:
+        """Get statistics for a specific user in a group"""
+        member = await self.get_group_member(group_guid, user_guid)
+        if not member:
+            return None
+        
+        settings = await self.get_group_settings(group_guid)
+        lists = settings.get("lists", {}) if settings else {}
+        
+        return {
+            "user_guid": member["user_guid"],
+            "message_count": member["message_count"],
+            "messages_today": member["messages_today"],
+            "first_name": member.get("first_name", ""),
+            "last_name": member.get("last_name", ""),
+            "username": member.get("username", ""),
+            "user_rank": member.get("user_rank", "member"),
+            "is_exempt": user_guid in lists.get("exempt", []),
+            "is_special": user_guid in lists.get("special", []),
+            "is_blocked": user_guid in lists.get("blocked", []),
+            "is_muted": user_guid in lists.get("muted", []),
+            "is_admin": member.get("user_rank") == "admin",
+            "is_owner": member.get("user_rank") == "owner"
+        }
+
+    async def get_top_group_members(self, group_guid: str, limit: int = 10) -> List[Dict]:
+        """Get top members by message count"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute("""
+                    SELECT user_guid, message_count, first_name, last_name, username
+                    FROM group_members
+                    WHERE group_guid = %s
+                    ORDER BY message_count DESC
+                    LIMIT %s
+                """, (group_guid, limit))
+                return await cursor.fetchall()
+
+    # Forced Join Methods
     async def get_top3_active_members(self, group_guid: str):
-        """
-        Returns exactly 3 members.
-        If fewer than 3 members exist, fills empty slots with '-' values.
-        """
+        """Returns exactly 3 members by today's messages"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("""
@@ -514,7 +694,6 @@ class Database:
                 
                 members = await cursor.fetchall()
 
-                # اگر گروه خالی بود → سه جای خالی برگردان
                 if not members:
                     return [
                         {"user_guid": "-", "messages_today": "-"},
@@ -522,7 +701,6 @@ class Database:
                         {"user_guid": "-", "messages_today": "-"}
                     ]
 
-                # گروه‌بندی برای موارد مساوی
                 grouped = {}
                 for m in members:
                     grouped.setdefault(m["messages_today"], []).append(m)
@@ -532,7 +710,7 @@ class Database:
                 top_members = []
                 for count in sorted_counts:
                     users_with_same = grouped[count]
-                    random.shuffle(users_with_same)  # انتخاب تصادفی در صورت مساوی
+                    random.shuffle(users_with_same)
                     
                     for u in users_with_same:
                         if len(top_members) < 3:
@@ -542,7 +720,6 @@ class Database:
                     if len(top_members) >= 3:
                         break
 
-                # اگر کمتر از 3 نفر بود → با "-" پر کن
                 while len(top_members) < 3:
                     top_members.append({
                         "user_guid": "-",
@@ -552,13 +729,7 @@ class Database:
                 return top_members
 
     async def add_forced_channel(self, channel_guid: str, channel_id: str):
-        """
-        اضافه کردن کانال برای جوین اجباری.
-        اگر کانال از قبل وجود داشته باشد، آیدی آن آپدیت می‌شود.
-        """
-        # حذف @ از ابتدای آیدی در صورت وجود، برای یکپارچگی داده‌ها
-        # clean_channel_id = channel_id.replace("@", "") 
-        
+        """Add a forced channel"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -568,51 +739,33 @@ class Database:
                 """, (channel_guid, channel_id))
 
     async def get_all_forced_channels(self) -> List[Dict]:
-        """
-        دریافت لیست تمام کانال‌های جوین اجباری به همراه GUID و آیدی کانال.
-        خروجی: لیستی از دیکشنری‌ها شامل {'channel_guid': '...', 'channel_id': '...'}
-        """
+        """Get all forced channels"""
         async with self.pool.acquire() as conn:
-            # استفاده از DictCursor برای برگرداندن نتیجه به صورت دیکشنری
             async with conn.cursor(aiomysql.DictCursor) as cursor:
-                # انتخاب هر دو ستون مورد نیاز
                 await cursor.execute("SELECT channel_guid, channel_id FROM forced_channels")
                 result = await cursor.fetchall()
-                
-                # برگرداندن لیست نتایج یا یک لیست خالی در صورت نبود رکورد
                 return list(result) if result else []
             
-    # دریافت کل گروه ها برای آمار و ارسال همگانی
     async def get_all_groups(self) -> List[Dict]:
+        """Get all groups"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("SELECT group_guid FROM `groups`")
                 result = await cursor.fetchall()
                 return list(result) if result else []
 
-    # دریافت کل کاربران پیوی
-        # دریافت کل کاربران (برای ارسال همگانی به پیوی)
-    async def get_all_users(self) -> list:
-        async with self.pool.acquire() as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT user_guid FROM users")
-                rows = await cursor.fetchall()
-                return [{"user_guid": row[0]} for row in rows] if rows else []
-
-    
-    # دریافت وضعیت قفل پیوی
     async def get_pv_status(self) -> bool:
+        """Get PV lock status"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("SELECT pv_locked FROM bot_settings WHERE id = 1")
                 result = await cursor.fetchone()
                 return bool(result[0]) if result else False
 
-    # تغییر وضعیت قفل پیوی
     async def set_pv_status(self, status: bool):
+        """Set PV lock status"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # اگر آیدی ۱ نبود میسازد، اگر بود آپدیت میکند
                 await cursor.execute("""
                     INSERT INTO bot_settings (id, pv_locked) 
                     VALUES (1, %s) 
@@ -620,11 +773,10 @@ class Database:
                 """, (int(status),))
                 await conn.commit()
 
-    # تنظیم ظرفیت گروه ها
     async def set_group_capacity(self, capacity: int):
+        """Set group capacity"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # اگر آیدی ۱ نبود میسازد، اگر بود آپدیت میکند
                 await cursor.execute("""
                     INSERT INTO bot_settings (id, max_groups) 
                     VALUES (1, %s) 
@@ -632,21 +784,16 @@ class Database:
                 """, (capacity,))
                 await conn.commit()
     
-        # دریافت ظرفیت تنظیم شده برای گروه‌ها
     async def get_group_capacity(self) -> int:
+        """Get group capacity"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("SELECT max_groups FROM bot_settings WHERE id = 1")
                 result = await cursor.fetchone()
-                # اگر مقداری در دیتابیس بود آن را برمی‌گرداند، در غیر این صورت مقدار پیش‌فرض 500 را برمی‌گرداند
                 return int(result[0]) if result else 500
 
     async def remove_forced_channel_by_id(self, channel_id: str):
-        """
-        حذف یک کانال از لیست جوین اجباری با استفاده از آیدی کانال.
-        """
-        # clean_channel_id = channel_id.replace("@", "")
-
+        """Remove a forced channel by ID"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
@@ -655,6 +802,7 @@ class Database:
                 )
 
     async def set_user_score_info(self, group_guid, user_guid, user_information=None, score=0):
+        """Set user score information"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -667,6 +815,7 @@ class Database:
                 await conn.commit()
 
     async def update_user_information(self, group_guid, user_guid, user_information):
+        """Update user information"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -676,8 +825,8 @@ class Database:
                 """, (json.dumps(user_information), group_guid, user_guid))
                 await conn.commit()
 
-
     async def update_user_score(self, group_guid, user_guid, score):
+        """Update user score"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -687,8 +836,8 @@ class Database:
                 """, (score, group_guid, user_guid))
                 await conn.commit()
 
-
     async def increment_user_score(self, group_guid, user_guid, delta=1):
+        """Increment user score"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("""
@@ -699,8 +848,8 @@ class Database:
                 """, (group_guid, user_guid, delta))
                 await conn.commit()
 
-
     async def get_user_score_info(self, group_guid, user_guid):
+        """Get user score info"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("""
@@ -725,8 +874,8 @@ class Database:
             "score": row["score"],
         }
 
-
     async def get_all_user_scores(self, group_guid):
+        """Get all user scores"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("""
@@ -739,10 +888,7 @@ class Database:
         return rows
 
     async def get_top3_by_score(self, group_guid: str):
-        """
-        Returns exactly 3 members by score for a specific group.
-        If fewer than 3 members exist, fills empty slots with '-' values.
-        """
+        """Returns exactly 3 members by score"""
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 await cursor.execute("""
@@ -774,9 +920,7 @@ class Database:
         """Add or update scheduled message"""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # حذف پیام قبلی
                 await cursor.execute("DELETE FROM scheduled_messages")
-                # اضافه کردن پیام جدید
                 await cursor.execute(
                     """INSERT INTO scheduled_messages (message_id, interval_hours, last_sent)
                     VALUES (%s, %s, NULL)""",
@@ -822,7 +966,7 @@ class Database:
                 await cursor.execute("DELETE FROM scheduled_messages")
                 await conn.commit()
 
-    # قوانین برای هر گروه
+    # Rules methods
     async def set_group_rules(self, group_guid: str, rules_text: str):
         """Set or update rules for a group"""
         async with self.pool.acquire() as conn:
@@ -855,3 +999,22 @@ class Database:
                     (group_guid,)
                 )
 
+    # Welcome log methods
+    async def add_welcome_log(self, group_guid: str, user_guid: str):
+        """Add user to welcome log (to track if they're new)"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    INSERT IGNORE INTO welcome_logs (group_guid, user_guid)
+                    VALUES (%s, %s)
+                """, (group_guid, user_guid))
+
+    async def is_user_new_to_group(self, group_guid: str, user_guid: str) -> bool:
+        """Check if user is new to group"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT 1 FROM welcome_logs
+                    WHERE group_guid = %s AND user_guid = %s
+                """, (group_guid, user_guid))
+                return not (await cursor.fetchone())
